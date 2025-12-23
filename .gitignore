@@ -10,7 +10,6 @@
 
 node_modules/
 dist/
-build/
 
 # prebuilded folders
 ios/build/

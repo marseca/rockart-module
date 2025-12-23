@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["RockenhancerModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.rockenhancer.RockenhancerModule"]
+  }
+}

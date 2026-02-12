@@ -1,0 +1,55 @@
+Metadata-Version: 2.4
+Name: dstretch-cli
+Version: 0.1.0
+Summary: PCA-based decorrelation stretch in YUV (YCrCb) color space
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: opencv-python>=4.8
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"
+Requires-Dist: black>=24.0; extra == "dev"
+
+# dstretch-cli
+
+A fast Python CLI that performs a decorrelation stretch using PCA (Karhunen–Loeve transform) in a YUV-like color space (OpenCV's YCrCb). The result is an enhanced image with reduced channel correlation and stronger color separation.
+
+## Install
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+```bash
+python -m dstretch_cli --input output/in.png --output results/out.png --scale 2.5
+```
+
+If you don't want to install yet, you can run with:
+
+```bash
+PYTHONPATH=src python -m dstretch_cli --input output/in.png --output results/out.png --scale 2.5
+```
+
+Defaults:
+- If `--input` is omitted, the first image in `output/` (sorted by name) is used.
+- If `--output` is omitted, the file is written to `results/<input_name>_pca_stretch_s{scale}.png`.
+- Default `--scale` is `2.0`.
+- Default `--space` is `yuv` (implemented with OpenCV's YCrCb conversion).
+- Alpha channels are preserved if present.
+
+## Notes on YUV/YCrCb
+
+OpenCV exposes YCrCb conversions (`cv2.COLOR_RGB2YCrCb` and `cv2.COLOR_YCrCb2RGB`). This tool uses those conversions as a practical YUV-like space for decorrelation.
+
+## Scale
+
+`--scale` controls the strength of the stretch. Higher values increase color separation but can clip highlights or shadows. Start with 2.0 and adjust.
+
+## Tests
+
+```bash
+pytest
+```

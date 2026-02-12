@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+src/dstretch_cli/__init__.py
+src/dstretch_cli/__main__.py
+src/dstretch_cli/cli.py
+src/dstretch_cli/colorspace.py
+src/dstretch_cli/io.py
+src/dstretch_cli/pca_stretch.py
+src/dstretch_cli/utils.py
+src/dstretch_cli.egg-info/PKG-INFO
+src/dstretch_cli.egg-info/SOURCES.txt
+src/dstretch_cli.egg-info/dependency_links.txt
+src/dstretch_cli.egg-info/requires.txt
+src/dstretch_cli.egg-info/top_level.txt
+tests/test_end_to_end.py
+tests/test_pca_stretch.py

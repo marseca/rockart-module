@@ -1,0 +1,19 @@
+DStretch Version 7.2 February, 2012
+File:DSC00608
+Matrix type: cov
+Stretch Type: mapped back
+Colorspace: YXX Ym:2.00 Um:1.00 Vm:0.40
+Calculated Mean:
+124.3539
+-84.1492
+201.7982
+Matrix coefficients:
+2.3736
+-0.6254
+-1.4455
+-0.6254
+2.1407
+0.9744
+-1.4455
+0.9744
+1.7464

@@ -6,7 +6,9 @@ declare class RockenhancerModule {
 	processPreview(
 		inputUriOrPath: string,
 		targetWidth: number,
-		jpegQuality: number
+		jpegQuality: number,
+		mode: "yxx" | "lxx",
+		factors: number[],
 	): Promise<string>;
 }
 

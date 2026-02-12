@@ -1,25 +1,30 @@
 #include <jni.h>
 #include <android/bitmap.h>
 #include <android/log.h>
+
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cctype>
 #include <string>
 #include <vector>
-#include <algorithm>
 
 #define LOG_TAG "RockEnhancerNative"
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
 
+constexpr double kEps = 1e-8;
+
 struct Image {
     int width{};
     int height{};
-    std::vector<float> data; // RGB, normalized 0..1
+    std::vector<float> data; // Interleaved 3 channels.
 };
 
 inline float clamp01(float v) {
-    return std::fmax(0.f, std::fmin(1.f, v));
+    return std::max(0.0f, std::min(1.0f, v));
 }
 
 bool bitmapToImage(JNIEnv* env, jobject bitmap, Image& out) {
@@ -40,19 +45,19 @@ bool bitmapToImage(JNIEnv* env, jobject bitmap, Image& out) {
         return false;
     }
 
-    const uint8_t* pixels = static_cast<uint8_t*>(pixelsPtr);
+    const uint8_t* pixels = static_cast<const uint8_t*>(pixelsPtr);
     out.width = static_cast<int>(info.width);
     out.height = static_cast<int>(info.height);
-    out.data.resize(out.width * out.height * 3);
+    out.data.resize(static_cast<size_t>(out.width) * static_cast<size_t>(out.height) * 3U);
 
     for (int y = 0; y < out.height; ++y) {
-        const uint8_t* row = pixels + y * info.stride;
+        const uint8_t* row = pixels + static_cast<size_t>(y) * info.stride;
         for (int x = 0; x < out.width; ++x) {
-            int idx = (y * out.width + x) * 3;
-            const uint8_t* px = row + x * 4;
-            out.data[idx + 0] = px[0] / 255.0f; // R
-            out.data[idx + 1] = px[1] / 255.0f; // G
-            out.data[idx + 2] = px[2] / 255.0f; // B
+            const uint8_t* px = row + static_cast<size_t>(x) * 4U;
+            const size_t idx = (static_cast<size_t>(y) * out.width + x) * 3U;
+            out.data[idx + 0] = px[0] / 255.0f;
+            out.data[idx + 1] = px[1] / 255.0f;
+            out.data[idx + 2] = px[2] / 255.0f;
         }
     }
 
@@ -66,7 +71,9 @@ bool imageToBitmap(JNIEnv* env, const Image& image, jobject bitmap) {
         ALOGE("Failed to get bitmap info on write");
         return false;
     }
-    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || info.width != static_cast<uint32_t>(image.width) ||
+
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
+        info.width != static_cast<uint32_t>(image.width) ||
         info.height != static_cast<uint32_t>(image.height)) {
         ALOGE("Bitmap mismatch on write");
         return false;
@@ -80,9 +87,9 @@ bool imageToBitmap(JNIEnv* env, const Image& image, jobject bitmap) {
 
     uint8_t* pixels = static_cast<uint8_t*>(pixelsPtr);
     for (int y = 0; y < image.height; ++y) {
-        uint8_t* row = pixels + y * info.stride;
+        uint8_t* row = pixels + static_cast<size_t>(y) * info.stride;
         for (int x = 0; x < image.width; ++x) {
-            int idx = (y * image.width + x) * 3;
+            const size_t idx = (static_cast<size_t>(y) * image.width + x) * 3U;
             row[x * 4 + 0] = static_cast<uint8_t>(clamp01(image.data[idx + 0]) * 255.0f + 0.5f);
             row[x * 4 + 1] = static_cast<uint8_t>(clamp01(image.data[idx + 1]) * 255.0f + 0.5f);
             row[x * 4 + 2] = static_cast<uint8_t>(clamp01(image.data[idx + 2]) * 255.0f + 0.5f);
@@ -102,47 +109,64 @@ Image resizeBilinear(const Image& src, int targetWidth) {
         return src;
     }
 
-    float scale = static_cast<float>(targetWidth) / static_cast<float>(src.width);
-    int targetHeight = static_cast<int>(std::round(src.height * scale));
+    const float scale = static_cast<float>(targetWidth) / static_cast<float>(src.width);
+    const int targetHeight = std::max(1, static_cast<int>(std::round(src.height * scale)));
+
     Image out;
     out.width = targetWidth;
     out.height = targetHeight;
-    out.data.resize(out.width * out.height * 3);
+    out.data.resize(static_cast<size_t>(out.width) * static_cast<size_t>(out.height) * 3U);
 
     for (int y = 0; y < targetHeight; ++y) {
-        float gy = (y + 0.5f) / scale - 0.5f;
+        const float gy = (static_cast<float>(y) + 0.5f) / scale - 0.5f;
         int y0 = static_cast<int>(std::floor(gy));
         int y1 = std::min(y0 + 1, src.height - 1);
-        float dy = gy - y0;
+        const float dy = gy - static_cast<float>(y0);
         y0 = std::max(y0, 0);
+
         for (int x = 0; x < targetWidth; ++x) {
-            float gx = (x + 0.5f) / scale - 0.5f;
+            const float gx = (static_cast<float>(x) + 0.5f) / scale - 0.5f;
             int x0 = static_cast<int>(std::floor(gx));
             int x1 = std::min(x0 + 1, src.width - 1);
-            float dx = gx - x0;
+            const float dx = gx - static_cast<float>(x0);
             x0 = std::max(x0, 0);
 
             for (int c = 0; c < 3; ++c) {
-                float v00 = src.data[(y0 * src.width + x0) * 3 + c];
-                float v01 = src.data[(y0 * src.width + x1) * 3 + c];
-                float v10 = src.data[(y1 * src.width + x0) * 3 + c];
-                float v11 = src.data[(y1 * src.width + x1) * 3 + c];
-                float v0 = v00 + (v01 - v00) * dx;
-                float v1 = v10 + (v11 - v10) * dx;
-                out.data[(y * targetWidth + x) * 3 + c] = v0 + (v1 - v0) * dy;
+                const float v00 = src.data[(static_cast<size_t>(y0) * src.width + x0) * 3U + c];
+                const float v01 = src.data[(static_cast<size_t>(y0) * src.width + x1) * 3U + c];
+                const float v10 = src.data[(static_cast<size_t>(y1) * src.width + x0) * 3U + c];
+                const float v11 = src.data[(static_cast<size_t>(y1) * src.width + x1) * 3U + c];
+
+                const float v0 = v00 + (v01 - v00) * dx;
+                const float v1 = v10 + (v11 - v10) * dx;
+                out.data[(static_cast<size_t>(y) * targetWidth + x) * 3U + c] = v0 + (v1 - v0) * dy;
             }
         }
     }
+
     return out;
 }
 
-void computeCovariance(const Image& img, double mean[3], double cov[3][3]) {
-    const size_t count = img.data.size() / 3;
-    mean[0] = mean[1] = mean[2] = 0.0;
+void computeMeanAndCovariance(
+    const Image& img,
+    std::array<double, 3>& mean,
+    double cov[3][3]
+) {
+    mean = {0.0, 0.0, 0.0};
+    const size_t count = img.data.size() / 3U;
+    if (count == 0) {
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                cov[r][c] = 0.0;
+            }
+        }
+        return;
+    }
+
     for (size_t i = 0; i < count; ++i) {
-        mean[0] += img.data[i * 3 + 0];
-        mean[1] += img.data[i * 3 + 1];
-        mean[2] += img.data[i * 3 + 2];
+        mean[0] += img.data[i * 3U + 0];
+        mean[1] += img.data[i * 3U + 1];
+        mean[2] += img.data[i * 3U + 2];
     }
     mean[0] /= static_cast<double>(count);
     mean[1] /= static_cast<double>(count);
@@ -153,21 +177,24 @@ void computeCovariance(const Image& img, double mean[3], double cov[3][3]) {
             cov[r][c] = 0.0;
         }
     }
+
     for (size_t i = 0; i < count; ++i) {
-        double v0 = img.data[i * 3 + 0] - mean[0];
-        double v1 = img.data[i * 3 + 1] - mean[1];
-        double v2 = img.data[i * 3 + 2] - mean[2];
-        cov[0][0] += v0 * v0;
-        cov[0][1] += v0 * v1;
-        cov[0][2] += v0 * v2;
-        cov[1][0] += v1 * v0;
-        cov[1][1] += v1 * v1;
-        cov[1][2] += v1 * v2;
-        cov[2][0] += v2 * v0;
-        cov[2][1] += v2 * v1;
-        cov[2][2] += v2 * v2;
+        const double c0 = img.data[i * 3U + 0] - mean[0];
+        const double c1 = img.data[i * 3U + 1] - mean[1];
+        const double c2 = img.data[i * 3U + 2] - mean[2];
+
+        cov[0][0] += c0 * c0;
+        cov[0][1] += c0 * c1;
+        cov[0][2] += c0 * c2;
+        cov[1][0] += c1 * c0;
+        cov[1][1] += c1 * c1;
+        cov[1][2] += c1 * c2;
+        cov[2][0] += c2 * c0;
+        cov[2][1] += c2 * c1;
+        cov[2][2] += c2 * c2;
     }
-    double denom = static_cast<double>(count > 1 ? (count - 1) : 1);
+
+    const double denom = static_cast<double>(count > 1 ? (count - 1) : 1);
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
             cov[r][c] /= denom;
@@ -176,49 +203,58 @@ void computeCovariance(const Image& img, double mean[3], double cov[3][3]) {
 }
 
 void jacobiEigenDecomposition(double a[3][3], double eigenValues[3], double eigenVectors[3][3]) {
-    // Initialize eigenvectors to identity
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 3; ++j) {
             eigenVectors[i][j] = (i == j) ? 1.0 : 0.0;
         }
-        eigenValues[i] = a[i][i];
     }
 
-    const int maxIter = 24;
-    for (int iter = 0; iter < maxIter; ++iter) {
-        int p = 0, q = 1;
+    constexpr int kMaxIter = 24;
+    for (int iter = 0; iter < kMaxIter; ++iter) {
+        int p = 0;
+        int q = 1;
         double maxOff = std::fabs(a[0][1]);
+
         if (std::fabs(a[0][2]) > maxOff) {
-            p = 0; q = 2; maxOff = std::fabs(a[0][2]);
+            p = 0;
+            q = 2;
+            maxOff = std::fabs(a[0][2]);
         }
         if (std::fabs(a[1][2]) > maxOff) {
-            p = 1; q = 2; maxOff = std::fabs(a[1][2]);
+            p = 1;
+            q = 2;
+            maxOff = std::fabs(a[1][2]);
         }
-        if (maxOff < 1e-10) break;
 
-        double app = a[p][p];
-        double aqq = a[q][q];
-        double apq = a[p][q];
-        double phi = 0.5 * std::atan2(2.0 * apq, aqq - app);
-        double c = std::cos(phi);
-        double s = std::sin(phi);
+        if (maxOff < 1e-12) {
+            break;
+        }
+
+        const double app = a[p][p];
+        const double aqq = a[q][q];
+        const double apq = a[p][q];
+
+        const double phi = 0.5 * std::atan2(2.0 * apq, aqq - app);
+        const double c = std::cos(phi);
+        const double s = std::sin(phi);
 
         a[p][p] = c * c * app - 2.0 * s * c * apq + s * s * aqq;
         a[q][q] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
-        a[p][q] = a[q][p] = 0.0;
+        a[p][q] = 0.0;
+        a[q][p] = 0.0;
 
         for (int k = 0; k < 3; ++k) {
             if (k != p && k != q) {
-                double akp = a[k][p];
-                double akq = a[k][q];
+                const double akp = a[k][p];
+                const double akq = a[k][q];
                 a[k][p] = a[p][k] = c * akp - s * akq;
                 a[k][q] = a[q][k] = s * akp + c * akq;
             }
         }
 
         for (int k = 0; k < 3; ++k) {
-            double vip = eigenVectors[k][p];
-            double viq = eigenVectors[k][q];
+            const double vip = eigenVectors[k][p];
+            const double viq = eigenVectors[k][q];
             eigenVectors[k][p] = c * vip - s * viq;
             eigenVectors[k][q] = s * vip + c * viq;
         }
@@ -229,212 +265,306 @@ void jacobiEigenDecomposition(double a[3][3], double eigenValues[3], double eige
     eigenValues[2] = a[2][2];
 }
 
-void applyPCADecorrelation(Image& img) {
-    double mean[3];
-    double cov[3][3];
-    computeCovariance(img, mean, cov);
-
-    double eigenValues[3];
-    double eigenVectors[3][3];
-    jacobiEigenDecomposition(cov, eigenValues, eigenVectors);
-
-    const double eps = 1e-5;
-    const size_t count = img.data.size() / 3;
-    for (size_t i = 0; i < count; ++i) {
-        double centered[3] = {
-                img.data[i * 3 + 0] - mean[0],
-                img.data[i * 3 + 1] - mean[1],
-                img.data[i * 3 + 2] - mean[2]
-        };
-        double projected[3]{};
-        for (int k = 0; k < 3; ++k) {
-            projected[k] = eigenVectors[0][k] * centered[0] + eigenVectors[1][k] * centered[1] +
-                            eigenVectors[2][k] * centered[2];
-            projected[k] /= std::sqrt(std::fabs(eigenValues[k]) + eps);
-        }
-        double reconstructed[3]{};
-        for (int j = 0; j < 3; ++j) {
-            reconstructed[j] = eigenVectors[j][0] * projected[0] + eigenVectors[j][1] * projected[1] +
-                               eigenVectors[j][2] * projected[2] + mean[j];
-            img.data[i * 3 + j] = static_cast<float>(clamp01(static_cast<float>(reconstructed[j])));
-        }
-    }
-}
-
-// Color conversion utilities
-inline float pivotRgb(float c) {
-    return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
-}
-
-inline float pivotXyz(float t) {
-    return t > 0.008856f ? std::cbrt(t) : (7.787f * t + 16.0f / 116.0f);
-}
-
-void rgbToLab(float r, float g, float b, float& L, float& a, float& labB) {
-    float rl = pivotRgb(r);
-    float gl = pivotRgb(g);
-    float bl = pivotRgb(b);
-
-    float X = rl * 0.4124f + gl * 0.3576f + bl * 0.1805f;
-    float Y = rl * 0.2126f + gl * 0.7152f + bl * 0.0722f;
-    float Z = rl * 0.0193f + gl * 0.1192f + bl * 0.9505f;
-
-    X /= 0.95047f;
-    Y /= 1.0f;
-    Z /= 1.08883f;
-
-    float fx = pivotXyz(X);
-    float fy = pivotXyz(Y);
-    float fz = pivotXyz(Z);
-
-    L = 116.0f * fy - 16.0f;
-    a = 500.0f * (fx - fy);
-    labB = 200.0f * (fy - fz);
-}
-
-inline float invPivotXyz(float t) {
-    float t3 = t * t * t;
-    return t3 > 0.008856f ? t3 : (t - 16.0f / 116.0f) / 7.787f;
-}
-
-void labToRgb(float L, float a, float labB, float& r, float& g, float& b) {
-    float fy = (L + 16.0f) / 116.0f;
-    float fx = a / 500.0f + fy;
-    float fz = fy - labB / 200.0f;
-
-    float X = invPivotXyz(fx) * 0.95047f;
-    float Y = invPivotXyz(fy) * 1.0f;
-    float Z = invPivotXyz(fz) * 1.08883f;
-
-    float rl = X * 3.2406f + Y * -1.5372f + Z * -0.4986f;
-    float gl = X * -0.9689f + Y * 1.8758f + Z * 0.0415f;
-    float bl = X * 0.0557f + Y * -0.2040f + Z * 1.0570f;
-
-    auto gamma = [](float c) {
-        return c <= 0.0031308f ? 12.92f * c : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
-    };
-
-    r = clamp01(gamma(rl));
-    g = clamp01(gamma(gl));
-    b = clamp01(gamma(bl));
-}
-
-std::vector<uint8_t> buildCLAHELut(const std::vector<float>& luma, int startX, int startY, int tileW, int tileH,
-                                   int width, int height, float clipLimit) {
-    const int bins = 256;
-    std::vector<int> hist(bins, 0);
-    int endX = std::min(startX + tileW, width);
-    int endY = std::min(startY + tileH, height);
-    int area = (endX - startX) * (endY - startY);
-
-    for (int y = startY; y < endY; ++y) {
-        for (int x = startX; x < endX; ++x) {
-            int idx = y * width + x;
-            int bin = std::clamp(static_cast<int>(luma[idx] * 255.0f + 0.5f), 0, 255);
-            hist[bin]++;
-        }
-    }
-
-    if (clipLimit > 0.0f) {
-        int limit = static_cast<int>(clipLimit * static_cast<float>(area) / bins) + 1;
-        int excess = 0;
-        for (int i = 0; i < bins; ++i) {
-            if (hist[i] > limit) {
-                excess += hist[i] - limit;
-                hist[i] = limit;
+void sortEigenPairsDescending(double eigenValues[3], double eigenVectors[3][3]) {
+    for (int i = 0; i < 2; ++i) {
+        int maxIdx = i;
+        for (int j = i + 1; j < 3; ++j) {
+            if (eigenValues[j] > eigenValues[maxIdx]) {
+                maxIdx = j;
             }
         }
-        int increment = excess / bins;
-        int remainder = excess % bins;
-        for (int i = 0; i < bins; ++i) {
-            hist[i] += increment;
-            if (i < remainder) hist[i] += 1;
-        }
-    }
-
-    std::vector<uint8_t> lut(bins, 0);
-    int cumulative = 0;
-    for (int i = 0; i < bins; ++i) {
-        cumulative += hist[i];
-        lut[i] = static_cast<uint8_t>(std::clamp((cumulative * 255) / std::max(area, 1), 0, 255));
-    }
-    return lut;
-}
-
-void applyCLAHE(std::vector<float>& luma, int width, int height, int tilesX = 8, int tilesY = 8, float clipLimit = 2.0f) {
-    int tileW = (width + tilesX - 1) / tilesX;
-    int tileH = (height + tilesY - 1) / tilesY;
-
-    std::vector<std::vector<uint8_t>> luts(tilesX * tilesY);
-    for (int ty = 0; ty < tilesY; ++ty) {
-        for (int tx = 0; tx < tilesX; ++tx) {
-            luts[ty * tilesX + tx] = buildCLAHELut(luma, tx * tileW, ty * tileH, tileW, tileH, width, height, clipLimit);
-        }
-    }
-
-    for (int y = 0; y < height; ++y) {
-        float gy = (static_cast<float>(y) + 0.5f) / tileH - 0.5f;
-        int ty = static_cast<int>(std::floor(gy));
-        int ty1 = std::min(ty + 1, tilesY - 1);
-        ty = std::clamp(ty, 0, tilesY - 1);
-        float dy = gy - ty;
-
-        for (int x = 0; x < width; ++x) {
-            float gx = (static_cast<float>(x) + 0.5f) / tileW - 0.5f;
-            int tx = static_cast<int>(std::floor(gx));
-            int tx1 = std::min(tx + 1, tilesX - 1);
-            tx = std::clamp(tx, 0, tilesX - 1);
-            float dx = gx - tx;
-
-            int idx = y * width + x;
-            int bin = std::clamp(static_cast<int>(luma[idx] * 255.0f + 0.5f), 0, 255);
-
-            auto lut00 = luts[ty * tilesX + tx][bin];
-            auto lut01 = luts[ty * tilesX + tx1][bin];
-            auto lut10 = luts[ty1 * tilesX + tx][bin];
-            auto lut11 = luts[ty1 * tilesX + tx1][bin];
-
-            float interpTop = lut00 + (lut01 - lut00) * dx;
-            float interpBottom = lut10 + (lut11 - lut10) * dx;
-            float finalVal = interpTop + (interpBottom - interpTop) * dy;
-
-            luma[idx] = clamp01(finalVal / 255.0f);
+        if (maxIdx != i) {
+            std::swap(eigenValues[i], eigenValues[maxIdx]);
+            for (int r = 0; r < 3; ++r) {
+                std::swap(eigenVectors[r][i], eigenVectors[r][maxIdx]);
+            }
         }
     }
 }
 
-Image applyLabClahe(const Image& img) {
+void pcaDecorrelateAndStretch(
+    Image& img,
+    double scale,
+    const std::array<double, 3>* channelScales = nullptr
+) {
+    const size_t count = img.data.size() / 3U;
+    if (count == 0) {
+        return;
+    }
+
+    std::array<double, 3> mean{};
+    double cov[3][3]{};
+    computeMeanAndCovariance(img, mean, cov);
+
+    double eigenValues[3]{};
+    double eigenVectors[3][3]{};
+    jacobiEigenDecomposition(cov, eigenValues, eigenVectors);
+    sortEigenPairsDescending(eigenValues, eigenVectors);
+
+    std::array<double, 3> projSum{0.0, 0.0, 0.0};
+    std::array<double, 3> projSumSq{0.0, 0.0, 0.0};
+
+    for (size_t i = 0; i < count; ++i) {
+        const double c0 = img.data[i * 3U + 0] - mean[0];
+        const double c1 = img.data[i * 3U + 1] - mean[1];
+        const double c2 = img.data[i * 3U + 2] - mean[2];
+
+        for (int k = 0; k < 3; ++k) {
+            const double p =
+                eigenVectors[0][k] * c0 +
+                eigenVectors[1][k] * c1 +
+                eigenVectors[2][k] * c2;
+            projSum[k] += p;
+            projSumSq[k] += p * p;
+        }
+    }
+
+    std::array<double, 3> sigma{};
+    const double n = static_cast<double>(count);
+    for (int k = 0; k < 3; ++k) {
+        const double mu = projSum[k] / n;
+        const double var = std::max(0.0, projSumSq[k] / n - mu * mu);
+        sigma[k] = std::sqrt(var);
+        if (sigma[k] < kEps) {
+            sigma[k] = 1.0;
+        }
+    }
+
+    const double targetBase = (sigma[0] + sigma[1] + sigma[2]) / 3.0 * scale;
+    std::array<double, 3> target{
+        targetBase,
+        targetBase,
+        targetBase,
+    };
+
+    if (channelScales != nullptr) {
+        for (int k = 0; k < 3; ++k) {
+            target[k] *= (*channelScales)[k];
+        }
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        const double c0 = img.data[i * 3U + 0] - mean[0];
+        const double c1 = img.data[i * 3U + 1] - mean[1];
+        const double c2 = img.data[i * 3U + 2] - mean[2];
+
+        double stretched[3]{};
+        for (int k = 0; k < 3; ++k) {
+            const double p =
+                eigenVectors[0][k] * c0 +
+                eigenVectors[1][k] * c1 +
+                eigenVectors[2][k] * c2;
+            stretched[k] = (p / sigma[k]) * target[k];
+        }
+
+        for (int j = 0; j < 3; ++j) {
+            const double reconstructed =
+                stretched[0] * eigenVectors[j][0] +
+                stretched[1] * eigenVectors[j][1] +
+                stretched[2] * eigenVectors[j][2] +
+                mean[j];
+            img.data[i * 3U + static_cast<size_t>(j)] = static_cast<float>(reconstructed);
+        }
+    }
+}
+
+Image allocateLike(const Image& src) {
     Image out;
-    out.width = img.width;
-    out.height = img.height;
-    out.data.resize(img.data.size());
+    out.width = src.width;
+    out.height = src.height;
+    out.data.resize(src.data.size());
+    return out;
+}
 
-    std::vector<float> L(img.width * img.height);
-    std::vector<float> a(img.width * img.height);
-    std::vector<float> b(img.width * img.height);
+double srgbToLinear(double c) {
+    c = std::clamp(c, 0.0, 1.0);
+    return c > 0.04045 ? std::pow((c + 0.055) / 1.055, 2.4) : c / 12.92;
+}
 
-    for (int i = 0; i < img.width * img.height; ++i) {
-        float r = img.data[i * 3 + 0];
-        float g = img.data[i * 3 + 1];
-        float bl = img.data[i * 3 + 2];
-        float lVal, aVal, bVal;
-        rgbToLab(r, g, bl, lVal, aVal, bVal);
-        L[i] = lVal / 100.0f; // normalize 0..1
-        a[i] = aVal;
-        b[i] = bVal;
+double linearToSrgb(double c) {
+    c = std::max(c, 0.0);
+    return c > 0.0031308 ? (1.055 * std::pow(c, 1.0 / 2.4) - 0.055) : (12.92 * c);
+}
+
+double fLab(double t) {
+    return t > 0.008856 ? std::cbrt(t) : (7.787 * t + 16.0 / 116.0);
+}
+
+double fLabInv(double t) {
+    const double t3 = t * t * t;
+    return t3 > 0.008856 ? t3 : (t - 16.0 / 116.0) / 7.787;
+}
+
+void rgbToYxx(const Image& rgb, Image& yxx, double yMul, double uMul, double vMul) {
+    yxx = allocateLike(rgb);
+    const size_t count = rgb.data.size() / 3U;
+    for (size_t i = 0; i < count; ++i) {
+        const double r = rgb.data[i * 3U + 0];
+        const double g = rgb.data[i * 3U + 1];
+        const double b = rgb.data[i * 3U + 2];
+
+        const double y = 0.299 * r + 0.587 * g + 0.114 * b;
+        const double u = yMul * (b - uMul * y);
+        const double v = yMul * (r - vMul * y);
+
+        yxx.data[i * 3U + 0] = static_cast<float>(y);
+        yxx.data[i * 3U + 1] = static_cast<float>(u);
+        yxx.data[i * 3U + 2] = static_cast<float>(v);
     }
+}
 
-    applyCLAHE(L, img.width, img.height);
+void yxxToRgb(const Image& yxx, Image& rgb, double yMul, double uMul, double vMul) {
+    rgb = allocateLike(yxx);
+    const double safeYMul = std::fabs(yMul) < kEps ? 1.0 : yMul;
+    const size_t count = yxx.data.size() / 3U;
 
-    for (int i = 0; i < img.width * img.height; ++i) {
-        float lScaled = std::clamp(L[i] * 100.0f, 0.0f, 100.0f);
-        float r, g, bl;
-        labToRgb(lScaled, a[i], b[i], r, g, bl);
-        out.data[i * 3 + 0] = r;
-        out.data[i * 3 + 1] = g;
-        out.data[i * 3 + 2] = bl;
+    for (size_t i = 0; i < count; ++i) {
+        const double y = yxx.data[i * 3U + 0];
+        const double u = yxx.data[i * 3U + 1];
+        const double v = yxx.data[i * 3U + 2];
+
+        const double r = v / safeYMul + vMul * y;
+        const double b = u / safeYMul + uMul * y;
+        const double g = (y - 0.299 * r - 0.114 * b) / 0.587;
+
+        rgb.data[i * 3U + 0] = static_cast<float>(r);
+        rgb.data[i * 3U + 1] = static_cast<float>(g);
+        rgb.data[i * 3U + 2] = static_cast<float>(b);
     }
+}
 
+void rgbToLxx(
+    const Image& rgb,
+    Image& lxx,
+    double lxxmul1,
+    double lxxmul2,
+    double lxxmula,
+    double lxxmulb
+) {
+    constexpr double d65Xn = 95.047;
+    constexpr double d65Yn = 100.0;
+    constexpr double d65Zn = 108.883;
+
+    lxx = allocateLike(rgb);
+    const size_t count = rgb.data.size() / 3U;
+
+    const double safeMul1 = std::fabs(lxxmul1) < kEps ? 1.0 : lxxmul1;
+    const double safeMul2 = std::fabs(lxxmul2) < kEps ? 1.0 : lxxmul2;
+
+    for (size_t i = 0; i < count; ++i) {
+        const double r = srgbToLinear(rgb.data[i * 3U + 0]);
+        const double g = srgbToLinear(rgb.data[i * 3U + 1]);
+        const double b = srgbToLinear(rgb.data[i * 3U + 2]);
+
+        const double x = (0.4124 * r + 0.3576 * g + 0.1805 * b) * 100.0;
+        const double y = (0.2126 * r + 0.7152 * g + 0.0722 * b) * 100.0;
+        const double z = (0.0193 * r + 0.1192 * g + 0.9505 * b) * 100.0;
+
+        const double fx = fLab(x / d65Xn);
+        const double fy = fLab(y / d65Yn);
+        const double fz = fLab(z / d65Zn);
+
+        const double l = 116.0 * fy - 16.0;
+        const double a = (1.0 / safeMul1) * 250.0 * (fx - lxxmula * fy);
+        const double bb = (1.0 / safeMul2) * 100.0 * (lxxmulb * fy - fz);
+
+        lxx.data[i * 3U + 0] = static_cast<float>(l);
+        lxx.data[i * 3U + 1] = static_cast<float>(a);
+        lxx.data[i * 3U + 2] = static_cast<float>(bb);
+    }
+}
+
+void lxxToRgb(
+    const Image& lxx,
+    Image& rgb,
+    double lxxmul1,
+    double lxxmul2,
+    double lxxmula,
+    double lxxmulb
+) {
+    constexpr double d65Xn = 95.047;
+    constexpr double d65Yn = 100.0;
+    constexpr double d65Zn = 108.883;
+
+    rgb = allocateLike(lxx);
+    const size_t count = lxx.data.size() / 3U;
+
+    for (size_t i = 0; i < count; ++i) {
+        const double l = lxx.data[i * 3U + 0];
+        const double a = lxx.data[i * 3U + 1];
+        const double b = lxx.data[i * 3U + 2];
+
+        const double fy = (l + 16.0) / 116.0;
+        const double fx = lxxmul1 * a * 0.004 + lxxmula * fy;
+        const double fz = fy * lxxmulb - lxxmul2 * b * 0.01;
+
+        const double x = fLabInv(fx) * d65Xn / 100.0;
+        const double y = fLabInv(fy) * d65Yn / 100.0;
+        const double z = fLabInv(fz) * d65Zn / 100.0;
+
+        const double rl = 3.2406 * x + -1.5372 * y + -0.4986 * z;
+        const double gl = -0.9689 * x + 1.8758 * y + 0.0415 * z;
+        const double bl = 0.0557 * x + -0.2040 * y + 1.0570 * z;
+
+        rgb.data[i * 3U + 0] = static_cast<float>(linearToSrgb(rl));
+        rgb.data[i * 3U + 1] = static_cast<float>(linearToSrgb(gl));
+        rgb.data[i * 3U + 2] = static_cast<float>(linearToSrgb(bl));
+    }
+}
+
+void clipImage(Image& img) {
+    for (float& v : img.data) {
+        v = clamp01(v);
+    }
+}
+
+Image applyYxxPcaStretch(
+    const Image& rgb,
+    double scale,
+    const std::array<double, 3>& yxxScales
+) {
+    Image yxx;
+    rgbToYxx(rgb, yxx, yxxScales[0], yxxScales[1], yxxScales[2]);
+    pcaDecorrelateAndStretch(yxx, scale);
+
+    Image out;
+    yxxToRgb(yxx, out, yxxScales[0], yxxScales[1], yxxScales[2]);
+    clipImage(out);
+    return out;
+}
+
+Image applyLxxPcaStretch(
+    const Image& rgb,
+    double scale,
+    const std::array<double, 4>& lxxScales
+) {
+    Image lxx;
+    rgbToLxx(rgb, lxx, lxxScales[0], lxxScales[1], lxxScales[2], lxxScales[3]);
+    pcaDecorrelateAndStretch(lxx, scale);
+
+    Image out;
+    lxxToRgb(lxx, out, lxxScales[0], lxxScales[1], lxxScales[2], lxxScales[3]);
+    clipImage(out);
+    return out;
+}
+
+std::string toLowerAscii(std::string value) {
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+std::vector<float> readFactors(JNIEnv* env, jfloatArray factors) {
+    if (factors == nullptr) {
+        return {};
+    }
+    const jsize len = env->GetArrayLength(factors);
+    if (len <= 0) {
+        return {};
+    }
+    std::vector<float> out(static_cast<size_t>(len));
+    env->GetFloatArrayRegion(factors, 0, len, out.data());
     return out;
 }
 
@@ -442,39 +572,80 @@ Image applyLabClahe(const Image& img) {
 
 extern "C" JNIEXPORT jint JNICALL
 Java_expo_modules_rockenhancer_RockenhancerModule_nativeProcess(
-        JNIEnv* env,
-        jobject /*thiz*/,
-        jstring jInputPath,
-        jstring jOutputPath,
-        jint targetWidth,
-        jint jpegQuality) {
+    JNIEnv* env,
+    jobject /*thiz*/,
+    jstring jInputPath,
+    jstring jOutputPath,
+    jint targetWidth,
+    jint jpegQuality,
+    jstring jMode,
+    jfloatArray factors
+) {
+    if (jInputPath == nullptr || jOutputPath == nullptr) {
+        ALOGE("Input/output path is null");
+        return -10;
+    }
+
     const char* inPathChars = env->GetStringUTFChars(jInputPath, nullptr);
     const char* outPathChars = env->GetStringUTFChars(jOutputPath, nullptr);
-    std::string inputPath(inPathChars ? inPathChars : "");
-    std::string outputPath(outPathChars ? outPathChars : "");
+    if (inPathChars == nullptr || outPathChars == nullptr) {
+        if (inPathChars != nullptr) {
+            env->ReleaseStringUTFChars(jInputPath, inPathChars);
+        }
+        if (outPathChars != nullptr) {
+            env->ReleaseStringUTFChars(jOutputPath, outPathChars);
+        }
+        ALOGE("Failed to read input/output path chars");
+        return -11;
+    }
+
+    std::string inputPath(inPathChars);
+    std::string outputPath(outPathChars);
     env->ReleaseStringUTFChars(jInputPath, inPathChars);
     env->ReleaseStringUTFChars(jOutputPath, outPathChars);
+
+    std::string mode = "yxx";
+    if (jMode != nullptr) {
+        const char* modeChars = env->GetStringUTFChars(jMode, nullptr);
+        if (modeChars != nullptr) {
+            mode = toLowerAscii(std::string(modeChars));
+            env->ReleaseStringUTFChars(jMode, modeChars);
+        }
+    }
+
+    const std::vector<float> factorsVec = readFactors(env, factors);
 
     jclass optionsCls = env->FindClass("android/graphics/BitmapFactory$Options");
     jmethodID optionsCtor = env->GetMethodID(optionsCls, "<init>", "()V");
     jobject optionsObj = env->NewObject(optionsCls, optionsCtor);
-    jfieldID inPreferredConfigField = env->GetFieldID(optionsCls, "inPreferredConfig",
-                                                     "Landroid/graphics/Bitmap$Config;");
+
+    jfieldID inPreferredConfigField = env->GetFieldID(
+        optionsCls,
+        "inPreferredConfig",
+        "Landroid/graphics/Bitmap$Config;"
+    );
 
     jclass bitmapConfigCls = env->FindClass("android/graphics/Bitmap$Config");
-    jmethodID valueOfConfig = env->GetStaticMethodID(bitmapConfigCls, "valueOf",
-                                                    "(Ljava/lang/String;)Landroid/graphics/Bitmap$Config;");
+    jmethodID valueOfConfig = env->GetStaticMethodID(
+        bitmapConfigCls,
+        "valueOf",
+        "(Ljava/lang/String;)Landroid/graphics/Bitmap$Config;"
+    );
     jstring argbStr = env->NewStringUTF("ARGB_8888");
     jobject argbConfig = env->CallStaticObjectMethod(bitmapConfigCls, valueOfConfig, argbStr);
     env->SetObjectField(optionsObj, inPreferredConfigField, argbConfig);
     env->DeleteLocalRef(argbStr);
 
-    jclass bfCls = env->FindClass("android/graphics/BitmapFactory");
-    jmethodID decodeMethod = env->GetStaticMethodID(bfCls, "decodeFile",
-                                                    "(Ljava/lang/String;Landroid/graphics/BitmapFactory$Options;)Landroid/graphics/Bitmap;");
-    jstring inputJ = env->NewStringUTF(inputPath.c_str());
-    jobject bitmap = env->CallStaticObjectMethod(bfCls, decodeMethod, inputJ, optionsObj);
-    env->DeleteLocalRef(inputJ);
+    jclass bitmapFactoryCls = env->FindClass("android/graphics/BitmapFactory");
+    jmethodID decodeMethod = env->GetStaticMethodID(
+        bitmapFactoryCls,
+        "decodeFile",
+        "(Ljava/lang/String;Landroid/graphics/BitmapFactory$Options;)Landroid/graphics/Bitmap;"
+    );
+
+    jstring inputPathJ = env->NewStringUTF(inputPath.c_str());
+    jobject bitmap = env->CallStaticObjectMethod(bitmapFactoryCls, decodeMethod, inputPathJ, optionsObj);
+    env->DeleteLocalRef(inputPathJ);
 
     if (bitmap == nullptr) {
         ALOGE("Failed to decode bitmap at %s", inputPath.c_str());
@@ -487,16 +658,57 @@ Java_expo_modules_rockenhancer_RockenhancerModule_nativeProcess(
         return -2;
     }
 
-    int desiredWidth = targetWidth > 0 ? targetWidth : 1980;
+    const int desiredWidth = targetWidth > 0 ? targetWidth : 1980;
+    const int safeJpegQuality = (jpegQuality >= 1 && jpegQuality <= 100) ? jpegQuality : 50;
+    constexpr double kDefaultScale = 1.0;
+
     Image resized = resizeBilinear(image, desiredWidth);
-    applyPCADecorrelation(resized);
-    Image finalImg = applyLabClahe(resized);
+    Image finalImg;
+
+    if (mode == "lxx") {
+        std::array<double, 4> lxxScales{1.0, 1.0, 1.0, 1.0};
+        if (factorsVec.size() >= 4) {
+            lxxScales = {
+                factorsVec[0],
+                factorsVec[1],
+                factorsVec[2],
+                factorsVec[3],
+            };
+        } else if (factorsVec.size() >= 3) {
+            lxxScales = {
+                factorsVec[0],
+                factorsVec[0],
+                factorsVec[1],
+                factorsVec[2],
+            };
+        }
+        finalImg = applyLxxPcaStretch(resized, kDefaultScale, lxxScales);
+    } else {
+        std::array<double, 3> yxxScales{1.0, 0.8, 0.4};
+        if (factorsVec.size() >= 3) {
+            yxxScales = {
+                factorsVec[0],
+                factorsVec[1],
+                factorsVec[2],
+            };
+        }
+        finalImg = applyYxxPcaStretch(resized, kDefaultScale, yxxScales);
+    }
 
     jclass bitmapCls = env->FindClass("android/graphics/Bitmap");
-    jmethodID createBitmapMethod = env->GetStaticMethodID(bitmapCls, "createBitmap",
-                                                         "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;");
-    jobject outBitmap = env->CallStaticObjectMethod(bitmapCls, createBitmapMethod,
-                                                   resized.width, resized.height, argbConfig);
+    jmethodID createBitmapMethod = env->GetStaticMethodID(
+        bitmapCls,
+        "createBitmap",
+        "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;"
+    );
+
+    jobject outBitmap = env->CallStaticObjectMethod(
+        bitmapCls,
+        createBitmapMethod,
+        finalImg.width,
+        finalImg.height,
+        argbConfig
+    );
 
     if (outBitmap == nullptr) {
         ALOGE("Failed to allocate output bitmap");
@@ -512,19 +724,32 @@ Java_expo_modules_rockenhancer_RockenhancerModule_nativeProcess(
 
     jclass fosCls = env->FindClass("java/io/FileOutputStream");
     jmethodID fosCtor = env->GetMethodID(fosCls, "<init>", "(Ljava/lang/String;)V");
-    jstring outPathJ = env->NewStringUTF(outputPath.c_str());
-    jobject fos = env->NewObject(fosCls, fosCtor, outPathJ);
-    env->DeleteLocalRef(outPathJ);
+    jstring outputPathJ = env->NewStringUTF(outputPath.c_str());
+    jobject fos = env->NewObject(fosCls, fosCtor, outputPathJ);
+    env->DeleteLocalRef(outputPathJ);
+
+    if (fos == nullptr) {
+        ALOGE("Failed to create FileOutputStream for %s", outputPath.c_str());
+        env->DeleteLocalRef(bitmap);
+        env->DeleteLocalRef(outBitmap);
+        return -5;
+    }
 
     jclass compressFormatCls = env->FindClass("android/graphics/Bitmap$CompressFormat");
-    jfieldID jpegField = env->GetStaticFieldID(compressFormatCls, "JPEG",
-                                              "Landroid/graphics/Bitmap$CompressFormat;");
+    jfieldID jpegField = env->GetStaticFieldID(
+        compressFormatCls,
+        "JPEG",
+        "Landroid/graphics/Bitmap$CompressFormat;"
+    );
     jobject jpegFormat = env->GetStaticObjectField(compressFormatCls, jpegField);
 
-    jmethodID compressMethod = env->GetMethodID(bitmapCls, "compress",
-                                               "(Landroid/graphics/Bitmap$CompressFormat;ILjava/io/OutputStream;)Z");
-    jboolean compressed = env->CallBooleanMethod(outBitmap, compressMethod, jpegFormat,
-                                                 jpegQuality > 0 ? jpegQuality : 50, fos);
+    jmethodID compressMethod = env->GetMethodID(
+        bitmapCls,
+        "compress",
+        "(Landroid/graphics/Bitmap$CompressFormat;ILjava/io/OutputStream;)Z"
+    );
+
+    const jboolean compressed = env->CallBooleanMethod(outBitmap, compressMethod, jpegFormat, safeJpegQuality, fos);
 
     jmethodID closeMethod = env->GetMethodID(fosCls, "close", "()V");
     env->CallVoidMethod(fos, closeMethod);
@@ -533,5 +758,5 @@ Java_expo_modules_rockenhancer_RockenhancerModule_nativeProcess(
     env->DeleteLocalRef(outBitmap);
     env->DeleteLocalRef(fos);
 
-    return compressed ? 0 : -5;
+    return compressed ? 0 : -6;
 }

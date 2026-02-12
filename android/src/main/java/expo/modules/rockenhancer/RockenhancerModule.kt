@@ -18,9 +18,11 @@ class RockenhancerModule : Module() {
 	override fun definition() = ModuleDefinition {
 	Name("Rockenhancer")
 
-	AsyncFunction("processPreview") { inputUriOrPath: String, targetWidth: Int, jpegQuality: Int ->
+	AsyncFunction("processPreview") { inputUriOrPath: String, targetWidth: Int, jpegQuality: Int, mode: String, factors: Array<Float> ->
 			val safeTargetWidth = if (targetWidth > 0) targetWidth else 1980
 			val safeQuality = if (jpegQuality in 1..100) jpegQuality else 50
+			val safeMode = if (mode != "") mode else "yxx"
+			val safeFactors = if (factors.isNotEmpty()) factors else arrayOf(1.0f, 1.0f, 1.0f)	// TODO SPlit to 3 lenght array
 
 			val ctx = appContext.reactContext?.applicationContext
 			?: throw IllegalStateException("React context not available")
@@ -34,7 +36,9 @@ class RockenhancerModule : Module() {
 					inputFile.absolutePath,
 					outputFile.absolutePath,
 					safeTargetWidth,
-					safeQuality
+					safeQuality,
+					safeMode,
+					safeFactors
 				)
 				if (result != 0) throw IOException("Native processing failed (code=$result)")
 
@@ -71,7 +75,9 @@ class RockenhancerModule : Module() {
 		inputPath: String,
 		outputPath: String,
 		targetWidth: Int,
-		jpegQuality: Int
+		jpegQuality: Int,
+		mode: String,
+		factors: Array<Float>
 	): Int
 
 	companion object {

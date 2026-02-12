@@ -1,5 +1,5 @@
 declare class RockenhancerModule {
-    processPreview(inputUriOrPath: string, targetWidth: number, jpegQuality: number): Promise<string>;
+    processPreview(inputUriOrPath: string, targetWidth: number, jpegQuality: number, mode: "yxx" | "lxx", factors: number[]): Promise<string>;
 }
 declare const _default: RockenhancerModule;
 export default _default;
